@@ -21,6 +21,9 @@ Web search (call_search) uses the providers' own built-in search the same
 way: Groq's browser search on gpt-oss, Gemini's Google Search grounding.
 Same keys, same lanes idea (WEB_SEARCH_LANES), and a model resting after a
 429 rests for both, since they share its free allowance.
+
+call_vision answers about a screenshot ("help me with this", vision.py) with
+the models that can see (VISION_LANES).
 """
 
 import json
@@ -211,6 +214,59 @@ async def _search_groq(prompt: str, model: str) -> dict:
 async def call_search(prompt: str) -> dict:
     """Answer using a live web search. Raises RuntimeError if no lane could."""
     return await _route(SEARCH_LANES, lambda p, m: _search_gemini(prompt, m) if p == "gemini" else _search_groq(prompt, m))
+
+
+# ----------------------------------------------------------------- vision
+
+# Models that can read a screenshot ("help me with this"). All read code and
+# error text well; fastest first (Flash-Lite ~2 s, Qwen on Groq thinks first,
+# ~2-7 s). VISION_LANES in .env overrides it.
+DEFAULT_VISION_LANES = (
+    "gemini:gemini-3.5-flash-lite,"
+    "groq:qwen/qwen3.8-27b,"
+    "gemini:gemini-3.5-flash,"
+    "gemini:gemini-2.5-flash"
+)
+VISION_LANES: list[tuple[str, str]] = [
+    tuple(lane.strip().split(":", 1))  # type: ignore[misc]
+    for lane in (os.getenv("VISION_LANES") or DEFAULT_VISION_LANES).split(",")
+    if ":" in lane
+]
+VISION_TIMEOUT_S = 40
+
+
+async def _vision_gemini(prompt: str, image_b64: str, mime: str, model: str) -> str:
+    body: dict = {"contents": [{"parts": [{"inline_data": {"mime_type": mime, "data": image_b64}}, {"text": prompt}]}]}
+    if model.startswith("gemini-3"):
+        body["generationConfig"] = {"thinkingConfig": {"thinkingLevel": "low"}}
+    async with httpx.AsyncClient(timeout=VISION_TIMEOUT_S) as client:
+        resp = await client.post(GEMINI_URL.format(model=model), headers={"x-goog-api-key": GEMINI_API_KEY}, json=body)
+        resp.raise_for_status()
+        parts = resp.json()["candidates"][0]["content"]["parts"]
+    return "".join(p.get("text", "") for p in parts if not p.get("thought"))
+
+
+async def _vision_groq(prompt: str, image_b64: str, mime: str, model: str) -> str:
+    async with httpx.AsyncClient(timeout=VISION_TIMEOUT_S) as client:
+        resp = await client.post(
+            GROQ_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                ]}],
+                "reasoning_format": "hidden",  # Qwen thinks first; only the answer comes back
+            },
+        )
+        resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"] or ""
+
+
+async def call_vision(prompt: str, image_b64: str, mime: str = "image/jpeg") -> str:
+    """An answer about an image. Raises RuntimeError if no lane could."""
+    return await _route(VISION_LANES, lambda p, m: _vision_gemini(prompt, image_b64, mime, m) if p == "gemini" else _vision_groq(prompt, image_b64, mime, m))
 
 
 def _strip_json_fences(text: str) -> str:

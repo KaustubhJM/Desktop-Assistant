@@ -110,9 +110,11 @@ class SpeechToText(_Lazy):
             )
             segments = list(segments)
             text = " ".join(s.text.strip() for s in segments).strip()
-            timed = [{"word": w.word, "start": w.start} for s in segments for w in (s.words or [])]
+            timed = [{"word": w.word, "start": w.start, "prob": round(float(w.probability), 3)} for s in segments for w in (s.words or [])]
+            # How sure Whisper is (its own average log-probability; the least sure part counts).
+            logprob = min((float(s.avg_logprob) for s in segments), default=None)
             self._touch()
-        return {"text": text, "words": timed, "seconds": round(time.perf_counter() - t1, 2), "load_seconds": round(load_s, 2), "model": name}
+        return {"text": text, "words": timed, "logprob": logprob, "seconds": round(time.perf_counter() - t1, 2), "load_seconds": round(load_s, 2), "model": name}
 
 
 class TextToSpeech(_Lazy):
@@ -165,12 +167,14 @@ def _transcribe_online(audio: np.ndarray, hint: Optional[str]) -> dict:
             GROQ_STT_URL,
             headers={"Authorization": f"Bearer {key}"},
             files={"file": ("speech.wav", _to_wav(_normalize(audio), 16000), "audio/wav")},
-            data={"model": GROQ_STT_MODEL, "language": "en", "response_format": "json", "temperature": "0",
+            data={"model": GROQ_STT_MODEL, "language": "en", "response_format": "verbose_json", "temperature": "0",
                   "prompt": " ".join(p for p in (hint, NAMES_HINT) if p)},
         )
         resp.raise_for_status()
-    text = str(resp.json().get("text") or "").strip()
-    return {"text": text, "seconds": round(time.perf_counter() - t0, 2), "load_seconds": 0, "model": GROQ_STT_MODEL}
+    data = resp.json()
+    text = str(data.get("text") or "").strip()
+    logprob = min((float(s["avg_logprob"]) for s in data.get("segments") or [] if "avg_logprob" in s), default=None)
+    return {"text": text, "logprob": logprob, "seconds": round(time.perf_counter() - t0, 2), "load_seconds": 0, "model": GROQ_STT_MODEL}
 
 
 def _normalize(audio: np.ndarray, peak: float = 0.7, max_gain: float = 20.0) -> np.ndarray:

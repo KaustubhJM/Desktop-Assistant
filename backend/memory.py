@@ -29,6 +29,11 @@ The graph for one turn:   START -> respond -> summarize -> END
 The reply's actions (reminders, YouTube, search...) are then applied by
 conversation.py exactly as before, and the final answer is written back into
 the thread.
+
+While Bit is looking at your screen ("help me with this", then follow-up
+questions), a turn can carry a screenshot: respond then asks a model that can
+see (agent.call_vision) with the same prompt plus the picture. The picture is
+used for that one answer and never stored (see Screenshot).
 """
 
 import asyncio
@@ -67,6 +72,22 @@ NEW_CHAT = "New chat"
 
 # ------------------------------------------------------------ the model (LangChain)
 
+class Screenshot:
+    """
+    A screenshot for one turn. Deliberately an object, not a string: LangGraph
+    copies plain-string settings of a run into the checkpoint's metadata (the
+    memory database), and a screenshot must never be saved.
+    """
+
+    __slots__ = ("data", "mime")
+
+    def __init__(self, data: str, mime: str = "image/jpeg"):
+        self.data, self.mime = data, mime
+
+    def __repr__(self) -> str:
+        return "<screenshot>"
+
+
 def _as_prompt(messages: list[BaseMessage]) -> str:
     """Our lanes take one prompt string: system text first, then the conversation."""
     parts = []
@@ -87,13 +108,18 @@ class LaneChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "bit-free-lanes"
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+    @staticmethod
+    def _call(messages, image: Optional["Screenshot"]):
+        prompt = _as_prompt(messages)
+        return agent.call_vision(prompt, image.data, image.mime) if image else agent._call_llm(prompt)
+
+    def _generate(self, messages, stop=None, run_manager=None, image: Optional["Screenshot"] = None, **kwargs) -> ChatResult:
         # The graph runs in a worker thread (no event loop there), so this is safe.
-        text = asyncio.run(agent._call_llm(_as_prompt(messages)))
+        text = asyncio.run(self._call(messages, image))
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
 
-    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
-        text = await agent._call_llm(_as_prompt(messages))
+    async def _agenerate(self, messages, stop=None, run_manager=None, image: Optional["Screenshot"] = None, **kwargs) -> ChatResult:
+        text = await self._call(messages, image)
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
 
 
@@ -149,8 +175,9 @@ def _respond(state: TurnState, config: RunnableConfig, *, store: BaseStore) -> d
         lines.insert(0, f"(Earlier in this conversation, summarised: {summary})")
     prompt: Callable[..., str] = conf["build_prompt"]
     text = prompt(history="\n".join(lines) or "(none yet)", message=str(message), memory=facts_for_prompt(str(message), store))
+    screen = conf.get("screen")  # a Screenshot while Bit is looking at your screen
     try:
-        reply = model.invoke([HumanMessage(content=text)]).content
+        reply = model.invoke([HumanMessage(content=text)], **({"image": screen} if isinstance(screen, Screenshot) else {})).content
         return {"reply": str(reply), "offline": False}
     except RuntimeError:
         return {"reply": None, "offline": True}
@@ -248,13 +275,15 @@ def config(thread_id: str, **extra: Any) -> dict:
     return {"configurable": {"thread_id": thread_id, **extra}}
 
 
-async def run_turn(thread_id: str, message: HumanMessage, build_prompt: Callable[..., str], skip_model: bool = False) -> dict:
-    """One turn through the graph: adds your message to the thread, summarises if long, asks the model."""
+async def run_turn(thread_id: str, message: HumanMessage, build_prompt: Callable[..., str], skip_model: bool = False,
+                   screen: Optional[Screenshot] = None) -> dict:
+    """One turn through the graph: adds your message to the thread, summarises if long, asks the model (with eyes if `screen`)."""
     m = _m()
+    extra = {"screen": screen} if screen is not None else {}
 
     def run() -> dict:
         with m.lock:  # one turn at a time (typed + "Hey Bit" at once)
-            return dict(m.graph.invoke({"messages": [message]}, config(thread_id, build_prompt=build_prompt, skip_model=skip_model)))
+            return dict(m.graph.invoke({"messages": [message]}, config(thread_id, build_prompt=build_prompt, skip_model=skip_model, **extra)))
 
     return await asyncio.to_thread(run)
 

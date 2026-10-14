@@ -15,6 +15,7 @@ The glue. Run this with:  uvicorn main:app --reload
 - POST /stt, /tts       -> local speech recognition and voice (speech.py)
 - GET/POST /wake        -> "Hey Bit" hands-free listening on/off/muted (wake.py)
 - POST /search         -> a web search answer (second step of a chat turn that needs one; web.py)
+- POST /look           -> help with what's on screen, from a screenshot (second step; vision.py)
 - GET/POST /activity    -> what you're doing (coding / watching / music), for the robot's mood (activity.py)
 - GET  /next            -> what's the next task right now
 """
@@ -45,6 +46,7 @@ import occasions
 import reminders
 import schedule_store
 import speech
+import vision
 import wake
 from scheduler import create_scheduler
 
@@ -184,6 +186,8 @@ class ChatIn(BaseModel):
     source: str = "typed"  # typed | voice
     mood: str = ""  # how the robot feels right now (app/src/main/mood.ts), a few words
     focus: str = ""  # a focus session's state, if one is running (app/src/main/focus.ts)
+    image: Optional[str] = None  # a screenshot (base64) while Bit is looking at your screen; never saved
+    mime: str = "image/jpeg"
 
 
 @app.websocket("/ws")
@@ -361,7 +365,10 @@ async def chat(msg: ChatIn):
     in "details" for the chat panel. Schedule actions are validated by
     actions.py before anything is saved.
     """
-    result = await conversation.converse(msg.text, name=msg.name, source=msg.source, mood=msg.mood[:120], focus=msg.focus[:200])
+    if msg.image and len(msg.image) > vision.MAX_IMAGE_BYTES * 4 // 3 + 4:
+        raise HTTPException(status_code=413, detail="screenshot too large")
+    result = await conversation.converse(msg.text, name=msg.name, source=msg.source, mood=msg.mood[:120], focus=msg.focus[:200],
+                                         image=msg.image or None, mime=msg.mime)
     # "reply" kept for older clients.
     return {**result, "reply": result["say"]}
 
@@ -445,6 +452,22 @@ async def search(req: SearchIn):
     if not query:
         raise HTTPException(status_code=400, detail="empty query")
     return await conversation.search_answer(query, req.question[:2000] or query, req.thread_id)
+
+
+class LookIn(BaseModel):
+    image: str  # base64 screenshot; used once for the answer, never saved
+    mime: str = "image/jpeg"
+    question: str = ""
+    name: str = "Bit"
+    thread_id: Optional[str] = None
+
+
+@app.post("/look")
+async def look(req: LookIn):
+    """Step two of a "help me with this" turn (see /chat's "look"): answer from a screenshot."""
+    if len(req.image) > vision.MAX_IMAGE_BYTES * 4 // 3 + 4:
+        raise HTTPException(status_code=413, detail="screenshot too large")
+    return await conversation.look_answer(req.image, req.mime, req.question[:500], req.name[:40] or "Bit", req.thread_id)
 
 
 class NoteIn(BaseModel):

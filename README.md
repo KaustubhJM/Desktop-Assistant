@@ -56,6 +56,9 @@ reminder and understanding plain-English updates like "push my 3pm to 4".
   weather, scores, prices…) using the providers' built-in web search (Groq
   browser search, Gemini Google Search grounding), as a second step of the
   chat turn so the robot can say "let me look that up" first.
+- **backend/vision.py** answers "help me with this" from a screenshot the
+  app takes when you ask (a model that can see: Gemini or Qwen on Groq),
+  the same two-step way: "let me take a look", then the answer.
 - **backend/gcal.py** connects Google Calendar (read, remind, add);
   **briefing.py** writes the morning hello; **games.py** has fair
   rock-paper-scissors, coins and dice; **occasions.py** knows festivals and

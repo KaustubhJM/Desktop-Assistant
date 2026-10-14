@@ -230,6 +230,54 @@ def test_next_and_unskippable():
     assert yt.calls == ["next"] and "Brave won't let me skip" in r["say"], r
 
 
+class FakeControls:
+    def __init__(self, nxt, prev, seek):
+        self.is_next_enabled, self.is_previous_enabled, self.is_playback_position_enabled = nxt, prev, seek
+
+
+class FakeTimeline:
+    def __init__(self, seconds):
+        from datetime import timedelta
+        self.min_seek_time = self.start_time = timedelta(0)
+        self.max_seek_time = self.end_time = timedelta(seconds=seconds)
+
+
+class SingleVideo(FakeSession):
+    """A lone YouTube video in Brave: no next/previous buttons, but seekable."""
+
+    def __init__(self, seconds=362.5, seek=True):
+        super().__init__("Brave", media.PLAYING)
+        self.seconds, self.seek, self.seeks = seconds, seek, []
+
+    def get_playback_info(self):
+        info = FakeInfo(self.status)
+        info.controls = FakeControls(False, False, self.seek)
+        return info
+
+    def get_timeline_properties(self):
+        return FakeTimeline(self.seconds)
+
+    async def try_change_playback_position_async(self, ticks):
+        self.seeks.append(ticks / 10_000_000)
+        return True
+
+
+def test_skip_a_single_video_jumps_to_the_end():
+    yt = SingleVideo()
+    use(FakeManager([yt], current=yt))
+    r = cmd("skip this video", "next")
+    assert yt.calls == [] and yt.seeks == [362.0] and "Autoplay" in r["say"], (r, yt.calls, yt.seeks)
+    r = cmd("go back", "previous")
+    assert yt.calls == [] and yt.seeks[-1] == 0 and r["say"] == "Back to the start.", (r, yt.seeks)
+
+
+def test_skip_a_live_stream_says_it_cant():
+    for yt in (SingleVideo(seconds=0), SingleVideo(seek=False)):
+        use(FakeManager([yt], current=yt))
+        r = cmd("skip", "next")
+        assert yt.calls == [] and yt.seeks == [] and "won't let me skip" in r["say"], r
+
+
 def test_whats_playing_is_answered_locally():
     yt = FakeSession("Brave", media.PLAYING, title="Lofi beats", artist="Lofi Girl")
     use(FakeManager([yt], current=yt))
@@ -332,16 +380,19 @@ def test_morning_hello_uses_tasks_weather_and_special_days():
         return True, "It's 24 degrees and sunny.", None
     async def capture(prompt):
         prompts.append(prompt)
-        return "SAY: Good morning! Sunny and 24. Gym at 7:30, then graphs at 7.\nDETAILS:\n- 07:30 — Gym\n- 19:00 — Revise graphs"
+        return "SAY: Good morning! Sunny and 24, and you've got two things today."
     real = (web.answer, agent._call_llm, occasions.today)
     web.answer, agent._call_llm = fake_answer, capture
     occasions.today = lambda on=None: {"emoji": "🎂", "label": "Happy birthday!", "birthday": True}
     try:
         r = asyncio.run(briefing.morning("Bit"))
-        assert r["say"].startswith("Good morning!") and "Gym" in r["details"], r
+        assert r["say"].startswith("Good morning!") and "two things" in r["say"], r
+        # Only the number is spoken: the model never even sees the titles.
         p = prompts[-1]
-        assert "07:30 | Gym" in p and "19:00 | Revise graphs" in p and "Happy birthday!" in p and "24 degrees" in p, p
-        assert p.index("07:30 | Gym") < p.index("19:00 | Revise graphs"), "earliest first"
+        assert "Number of tasks today: 2" in p and "Happy birthday!" in p and "24 degrees" in p, p
+        assert "Gym" not in p and "Revise graphs" not in p, p
+        # The list itself is in the panel, earliest first.
+        assert r["details"].index("07:30 — Gym") < r["details"].index("19:00 — Revise graphs"), r
     finally:
         web.answer, agent._call_llm, occasions.today = real
 
@@ -356,8 +407,16 @@ def test_morning_hello_without_any_model():
     try:
         r = asyncio.run(briefing.morning("Bit"))
         assert "things today" in r["say"] or "one thing today" in r["say"] or "Nothing on your list" in r["say"], r
+        assert "Gym" not in r["say"] and "Revise graphs" not in r["say"], "the template says the number only"
     finally:
         web.answer, agent._call_llm = real
+
+
+def test_morning_count_in_words():
+    assert briefing._count_words(0) == "Nothing on your list today."
+    assert briefing._count_words(1) == "You have one thing today."
+    assert briefing._count_words(3) == "You have three things today."
+    assert briefing._count_words(14) == "You have 14 things today."
 
 
 def test_check_in_goes_into_the_conversation():
@@ -618,6 +677,222 @@ def test_retired_model_and_bad_key_rest_long():
 
 
 # ---------------------------------------------------------------------- runner
+
+# ------------------------------------------------------- "help me with this"
+
+import base64  # noqa: E402
+from datetime import date, timedelta  # noqa: E402
+
+import vision  # noqa: E402
+
+JPEG = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\0" * 200).decode()  # just the header the check looks at
+VISION_PROMPTS: list = []
+
+
+def fake_vision(text):
+    async def call(prompt, image_b64, mime="image/jpeg"):
+        VISION_PROMPTS.append((prompt, image_b64, mime))
+        agent.last_lane = "gemini:gemini-3.5-flash-lite"
+        return text
+    agent.call_vision = call
+    VISION_PROMPTS.clear()
+
+
+def test_help_me_with_this_looks_without_the_chat_model():
+    LLM_REPLIES.clear()
+    before = len(conversation.recent_messages(100))
+    for text in ("hey help me with this", "what does this error mean?", "look at my screen"):
+        LLM_REPLIES.append({"say": "unused", "mood": "happy", "action": None})
+        r = asyncio.run(conversation.converse(text))
+        assert r["look"] == {"question": text} and r["say"] in conversation.PEEKING and r["mood"] == "thinking", r
+        assert not r["follow_up"] and not r["applied"] and not r["quiet"], r
+        assert len(LLM_REPLIES) == 1, "a screen question shouldn't wait for the chat model first"
+        LLM_REPLIES.clear()
+    # Only the user's messages are logged; the answer comes from look_answer.
+    assert len(conversation.recent_messages(100)) == before + 3
+
+
+def test_reminders_about_the_screen_stay_reminders():
+    r = say("remind me to look at the screen tomorrow at 9", {"say": "Okay, I'll remind you.", "mood": "happy", "action": None})
+    assert r["look"] is None and r["say"] == "Okay, I'll remind you.", r
+
+
+def test_the_model_can_ask_for_a_look():
+    r = say("why is my code not compiling?", {"say": "", "mood": "curious", "action": {"type": "look", "question": "why won't my code compile"}})
+    assert r["look"] == {"question": "why won't my code compile"} and r["say"] in conversation.PEEKING, r
+
+
+def test_look_answer_is_spoken_remembered_and_says_where_the_picture_went():
+    fake_vision("SAY: That's a KeyError: chemistry isn't in your marks dictionary.\nDETAILS: Add `'chemistry': 85` to `marks`.\nSEEN: a Python KeyError in VS Code")
+    r = asyncio.run(conversation.look_answer(JPEG, "image/jpeg", "help me with this"))
+    # It keeps listening and keeps looking: the next question comes with a fresh screenshot.
+    assert r["ok"] and r["say"] == "That's a KeyError: chemistry isn't in your marks dictionary." and r["follow_up"] and r["screen_mode"], r
+    # One short line says where the screenshot went, and how to stop.
+    note = r["details"].split("\n\n")[-1]
+    assert "'chemistry': 85" in r["details"] and note.startswith("📸 Screenshot sent to Google Gemini (Bit doesn't save it).") and "stop looking" in note, r
+    assert r["details"].count("📸") == 1 and "👀" not in r["details"], r
+    prompt, image, mime = VISION_PROMPTS[0]
+    assert image == JPEG and mime == "image/jpeg" and '"help me with this"' in prompt
+    assert conversation.recent_messages(1)[0]["text"] == r["say"]
+    # The model's memory has what was on screen, so "how do I fix it?" works next.
+    last = memory.thread_state(memory.current_thread())["messages"][-1].content
+    assert "Looked at the user's screen: a Python KeyError in VS Code" in last and "'chemistry': 85" in last and "📸" not in last, last
+
+
+def test_look_rejects_non_images_and_survives_a_dead_model():
+    fake_vision("SAY: should not be called")
+    r = asyncio.run(conversation.look_answer(base64.b64encode(b"not an image").decode(), "image/jpeg", "help"))
+    assert not r["ok"] and VISION_PROMPTS == [] and "clear look" in r["say"], r
+    r = asyncio.run(conversation.look_answer(JPEG, "image/gif", "help"))
+    assert not r["ok"] and VISION_PROMPTS == [], r
+
+    async def down(prompt, image_b64, mime="image/jpeg"):
+        raise RuntimeError("all lanes failed")
+    agent.call_vision = down
+    r = asyncio.run(conversation.look_answer(JPEG, "image/jpeg", "help"))
+    assert not r["ok"] and "couldn't reach" in r["say"], r
+
+
+def test_vision_parse_tolerates_loose_formats():
+    assert vision.parse("SAY: Hi there.\nDETAILS: none\nSEEN: a login page") == ("Hi there.", None, "a login page")
+    say_, details, seen = vision.parse("It's a 404 page. The link is broken. Try the home page.")
+    assert say_ == "It's a 404 page. The link is broken." and "home page" in details and seen == "", (say_, details, seen)
+
+
+def test_follow_ups_while_looking_see_the_screen():
+    LLM_REPLIES.clear()
+    fake_vision(json.dumps({"say": "Line 3 asks for chemistry, which isn't in marks.", "details": "Use `marks.get(subject, 0)`.",
+                            "mood": "happy", "action": None, "follow_up": True}))
+    r = asyncio.run(conversation.converse("why is it crashing?", source="voice", image=JPEG))
+    prompt, image, mime = VISION_PROMPTS[0]
+    assert image == JPEG and "You can SEE the user's screen" in prompt and "why is it crashing?" in prompt, prompt[-300:]
+    assert r["say"] == "Line 3 asks for chemistry, which isn't in marks." and r["follow_up"] and r["screen_mode"] is True and r["look"] is None, r
+    # The fix stays in the model's memory for "and line 5?" (the details, not the picture).
+    last = memory.thread_state(memory.current_thread())["messages"][-1].content
+    assert "marks.get(subject, 0)" in last, last
+
+
+def test_while_looking_help_me_with_this_goes_to_the_eyes_not_another_screenshot():
+    fake_vision(json.dumps({"say": "That's a for loop over your subjects.", "mood": "happy", "action": None, "follow_up": True}))
+    r = asyncio.run(conversation.converse("help me with this", image=JPEG))
+    assert r["look"] is None and r["say"] == "That's a for loop over your subjects." and len(VISION_PROMPTS) == 1, r
+    fake_vision(json.dumps({"say": "", "mood": "happy", "action": {"type": "look", "question": "x"}}))
+    r = asyncio.run(conversation.converse("what's this?", image=JPEG))
+    assert r["look"] is None and r["screen_mode"] is True and "What would you like me to do?" in r["say"], r
+
+
+def test_tasks_still_work_while_looking():
+    fake_vision(json.dumps({"say": "Done, I'll remind you.", "mood": "happy", "action": {"type": "add", "title": "Revise DSA", "date": None, "time": "21:00", "in_minutes": None, "repeat": None}}))
+    r = asyncio.run(conversation.converse("also remind me to revise DSA at 9 pm", image=JPEG))
+    assert r["applied"] and r["screen_mode"] is True and any(o["title"] == "Revise DSA" for o in reminders.occurrences(date.today(), date.today() + timedelta(days=1))), r
+
+
+def test_stop_looking_needs_no_model():
+    LLM_REPLIES.clear()
+    fake_vision("SAY: should not be called")
+    LLM_REPLIES.append({"say": "unused", "mood": "happy", "action": None})
+    for text in ("ok stop looking", "close your eyes"):
+        r = asyncio.run(conversation.converse(text, image=JPEG))
+        assert r["screen_mode"] is False and r["say"] == conversation.STOPPED_LOOKING and not r["follow_up"], r
+    assert VISION_PROMPTS == [] and len(LLM_REPLIES) == 1
+    LLM_REPLIES.clear()
+
+
+def test_casual_stops_while_looking():
+    LLM_REPLIES.clear()
+    fake_vision("SAY: should not be called")
+    for text in ("You can stop now.", "stop", "okay that's it", "thanks, I'm done", "that's all for now"):
+        r = asyncio.run(conversation.converse(text, source="voice", image=JPEG))
+        assert r["screen_mode"] is False and r["say"] == conversation.STOPPED_LOOKING, (text, r)
+    assert VISION_PROMPTS == []
+    # Not looking: a plain "stop" is an ordinary message (the model decides what it means).
+    LLM_REPLIES.append({"say": "Okay!", "mood": "happy", "action": None})
+    r = asyncio.run(conversation.converse("stop"))
+    assert r["screen_mode"] is None and not LLM_REPLIES, r
+    # Still looking: "stop the music" and "why did it stop?" aren't about the screen.
+    for text in ("stop the music", "why did it stop?"):
+        fake_vision(json.dumps({"say": "Sure.", "mood": "happy", "action": None}))
+        r = asyncio.run(conversation.converse(text, image=JPEG))
+        assert r["screen_mode"] is True and len(VISION_PROMPTS) == 1, (text, r)
+
+
+def test_saying_it_stopped_looking_really_stops():
+    fake_vision(json.dumps({"say": "Got it, I'll stop looking at your screen.", "mood": "happy", "action": None}))
+    r = asyncio.run(conversation.converse("alright, leave it", image=JPEG))
+    assert r["screen_mode"] is False, r
+    fake_vision(json.dumps({"say": "Okay!", "mood": "happy", "action": {"type": "look", "stop": True}}))
+    r = asyncio.run(conversation.converse("you may rest your eyes", image=JPEG))
+    assert r["screen_mode"] is False and r["say"] == conversation.STOPPED_LOOKING, r
+    prompt = VISION_PROMPTS[0][0]
+    assert '{"type": "look", "stop": true}' in prompt, "the model must know how to stop"
+
+
+def test_no_screenshot_no_screen_mode_and_a_dead_vision_model_says_so():
+    LLM_REPLIES.append({"say": "Hi!", "mood": "happy", "action": None})
+    r = asyncio.run(conversation.converse("hello"))
+    assert r["screen_mode"] is None, r
+
+    async def down(prompt, image_b64, mime="image/jpeg"):
+        raise RuntimeError("all lanes failed")
+    agent.call_vision = down
+    r = asyncio.run(conversation.converse("why is it crashing?", image=JPEG))
+    assert r["offline"] and "couldn't look at your screen" in r["say"], r
+    # A broken picture is ignored (an ordinary turn), never sent.
+    fake_vision("SAY: should not be called")
+    LLM_REPLIES.append({"say": "Hmm?", "mood": "curious", "action": None})
+    r = asyncio.run(conversation.converse("and now?", image=base64.b64encode(b"junk").decode()))
+    assert VISION_PROMPTS == [] and r["screen_mode"] is None and r["say"] == "Hmm?", r
+
+
+def test_screenshots_are_never_saved():
+    marker = base64.b64encode(b"\xff\xd8\xff\xe0" + b"BIT-SCREEN-MARKER-" * 40).decode()
+    fake_vision(json.dumps({"say": "I see it.", "mood": "happy", "action": None}))
+    asyncio.run(conversation.converse("what's on line 2?", image=marker))
+    assert VISION_PROMPTS and VISION_PROMPTS[0][1] == marker
+    m = memory._m()
+    m.conn.commit()
+    blob = b"".join(f.read_bytes() for f in Path(m.path).parent.glob(Path(m.path).name + "*"))
+    blob += b"".join(f.read_bytes() for f in Path(os.environ["REMINDER_DB_PATH"]).parent.glob("*.db*"))
+    assert marker[40:120].encode() not in blob, "a screenshot ended up in a database file"
+
+
+# ------------------------------------------------------- background talk
+
+def test_background_gibberish_is_ignored_without_the_model():
+    LLM_REPLIES.clear()
+    LLM_REPLIES.append({"say": "unused", "mood": "happy", "action": None})
+    before = len(conversation.recent_messages(500))
+    for text in ("Paj Shogu. Paj Shogu. Paj Shogu. Paj Shogu", "Bit is a little robot. Bit is a little robot."):
+        r = asyncio.run(conversation.converse(text, source="voice"))
+        assert r["ignored"] and r["say"] == "" and not r["follow_up"] and r["action"] is None, r
+    assert len(LLM_REPLIES) == 1 and len(conversation.recent_messages(500)) == before, "no model call, nothing logged"
+    LLM_REPLIES.clear()
+
+
+def test_repeats_that_people_really_say_are_not_background():
+    for text in ("Stop, stop, stop.", "no no no no", "very very very good", "you're a cute little robot", "play the video"):
+        assert not conversation.sounds_like_background(text), text
+    for text in ("Paj Shogu. Paj Shogu. Paj Shogu.", "ha ha ha ha ha", "I'm a little robot. I'm a little robot. I'm a little robot."):
+        assert conversation.sounds_like_background(text), text
+
+
+def test_the_model_can_decide_it_was_not_for_bit():
+    LLM_REPLIES.append({"say": "", "mood": "neutral", "action": {"type": "ignore"}, "follow_up": True})
+    r = asyncio.run(conversation.converse("to Cassey Houtom", source="voice"))
+    assert r["ignored"] and r["say"] == "" and not r["follow_up"], r
+    log = conversation.recent_messages(2)
+    assert log[0]["text"] == "to Cassey Houtom" and log[1]["text"] == conversation.IGNORED_NOTE, log
+    assert "isn't meant for you" in conversation.HEARD_NOTE
+
+
+def test_typed_messages_are_never_ignored():
+    LLM_REPLIES.append({"say": "", "mood": "neutral", "action": {"type": "ignore"}})
+    r = asyncio.run(conversation.converse("asdf qwer", source="typed"))
+    assert not r["ignored"] and "not sure what you mean" in r["say"], r
+    LLM_REPLIES.append({"say": "Ha, got it.", "mood": "happy", "action": None})
+    r = asyncio.run(conversation.converse("Paj Shogu. Paj Shogu. Paj Shogu.", source="typed"))
+    assert not r["ignored"] and r["say"] == "Ha, got it.", r
+
 
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

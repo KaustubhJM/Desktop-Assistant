@@ -236,7 +236,39 @@ async def control(command: object) -> tuple[bool, str]:
     target = playing[0] if playing else current
     if target is None:
         return True, "Nothing's playing right now."
+    where = app_name(target.source_app_user_model_id)
+    if not _button_enabled(target, cmd):
+        # A single YouTube video in a browser has no "next" button: Windows
+        # accepts the skip and the browser silently drops it. Seek instead:
+        # to the end (YouTube's autoplay starts "Up next"), or to the start.
+        if await _seek(target, to_end=cmd == "next"):
+            return True, "Skipped to the end. Autoplay will start the next one." if cmd == "next" else "Back to the start."
+        return True, f"{where} won't let me skip that one."
     ok = await (target.try_skip_next_async() if cmd == "next" else target.try_skip_previous_async())
     if not ok:
-        return True, f"{app_name(target.source_app_user_model_id)} won't let me skip that one."
+        return True, f"{where} won't let me skip that one."
     return True, "Skipped." if cmd == "next" else "Going back."
+
+
+def _button_enabled(session, cmd: str) -> bool:
+    """Is the app's own next/previous button on? (True if Windows won't say.)"""
+    try:
+        controls = session.get_playback_info().controls
+        return bool(controls.is_next_enabled if cmd == "next" else controls.is_previous_enabled)
+    except Exception:
+        return True
+
+
+async def _seek(session, to_end: bool) -> bool:
+    """Jump to the end (minus a moment, so the player sees it finish) or the start."""
+    try:
+        if not session.get_playback_info().controls.is_playback_position_enabled:
+            return False
+        timeline = session.get_timeline_properties()
+        end = timeline.max_seek_time or timeline.end_time
+        if to_end and end.total_seconds() < 2:
+            return False  # length unknown (e.g. a live stream)
+        at = (end.total_seconds() - 0.5) if to_end else timeline.min_seek_time.total_seconds()
+        return bool(await session.try_change_playback_position_async(int(at * 10_000_000)))  # 100 ns ticks
+    except Exception:
+        return False

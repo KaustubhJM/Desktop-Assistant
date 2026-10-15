@@ -16,12 +16,14 @@ One LLM call per turn. The model answers with a small JSON object:
   mood      how the robot's face should react
   action    optional schedule change (validated by actions.py), or a YouTube
             search / media control / web search (youtube.py, media.py, web.py),
-            or a look at your screen when you ask for help with it (vision.py)
+            a look at your screen when you ask for help with it (vision.py),
+            or an app to open from your Start menu (apps.py)
   follow_up keep listening for an answer (conversation mode)
   remember  facts about the user worth keeping (long-term memory)
   forget    facts to drop
 """
 
+import asyncio
 import json
 import random
 import re
@@ -31,6 +33,7 @@ from typing import Optional
 from langchain_core.messages import AIMessage, HumanMessage
 
 import agent
+import apps
 import games
 import gcal
 import media
@@ -103,6 +106,10 @@ YouTube and music (the app opens YouTube in the user's browser):
   {{"type": "youtube", "query": "<search words>", "play": true or false}}  (play true = play the best match, e.g. "play lofi"; false = show results, e.g. "find videos about recursion")
   {{"type": "media", "command": "play|pause|next|previous|status|volume_up|volume_down|mute"}}  (controls whatever is already playing; "status" = "what's playing?")
 Use youtube only when the user asks to play/watch/find something; for "pause", "resume", "skip", use media.
+For "something similar" / "more like this", name one specific different song you know that matches its mood and
+genre (devotional, romantic, sad, party, lofi...), ideally the same singer, composer or film, and put that song's
+title and artist in the query. Never the song that's playing (a search naming it just plays it again), and not a
+vague "<artist> songs".
 Doing a trick when asked ("do a backflip", "dance for me", "take a bow", "spin around"):
   {{"type": "move", "name": "dance|spin|backflip|bow|jump|hop|doublehop|wiggle|nod|shrug|sneeze|stretch|yawn|dizzy"}}
   (say something short and playful, like "Watch this!"; the app plays the move after you speak)
@@ -116,6 +123,10 @@ Google Calendar (only when the user's calendar is listed above): {{"type": "cale
 something on their (Google) calendar. Reminders and tasks still use "add".
 Focus timer (Pomodoro): {{"type": "focus", "minutes": <int, default 25>}} to start ("focus for 25 minutes",
 "start a pomodoro"), {{"type": "focus", "stop": true}} to stop it. Say it in a few words.
+Opening an app or game on the user's laptop ("open VS Code", "launch WhatsApp", "start Steam"):
+  {{"type": "open_app", "name": "<the app's usual name, e.g. Visual Studio Code, File Explorer, Spotify>"}}
+  (the app opens the closest match from their Start menu and says what opened). Websites (YouTube, Google, Gmail)
+aren't apps: use youtube or search for those. You can't close apps or open files.
 Looking things up on the internet:
   {{"type": "search", "query": "<what to search for>", "open": false}}
 Use search whenever the answer depends on current or real-world facts you can't be sure of: news, weather,
@@ -300,6 +311,15 @@ def sounds_like_background(text: str) -> bool:
 # "google X", "search X on Google": open Google's results page, don't answer.
 GOOGLE_IT = re.compile(r"^\W*(?:(?:hey|ok|okay)\W+\w+\W+)?(?:please\s+)?google\b|\bon google\b|\bgoogle (?:it|that|this|for)\b", re.I)
 
+# "Open Chrome", "launch VS Code": a clear match in the Start menu opens right
+# away (no model call). Anything else ("open my reminders", "open YouTube") is the model's.
+OPEN_APP = re.compile(
+    r"^\W*(?:(?:hey|ok|okay)\W+\w+\W+)?(?:please\s+|can you\s+|could you\s+)?(?:open|launch)\s+(?:up\s+)?"
+    r"(.{2,60}?)(?:\W+(?:for me|please|now))*\W*$",
+    re.I,
+)
+OPEN_APP_MAX_WORDS = 8
+
 
 # "Help me with this", "look at my screen": short asks about the screen go
 # straight to a screenshot (no chat-model round trip first).
@@ -333,6 +353,24 @@ NOT_SCREEN_HELP = re.compile(r"\b(?:remind|reminder|tomorrow|tonight|later|sched
 
 YES = re.compile(r"^\s*(yes|yeah|yep|yup|sure|ok(ay)?|do it|confirm|go ahead|please do)\b", re.I)
 NO = re.compile(r"^\s*(no|nope|nah|cancel|keep it|never ?mind|don.?t)\b", re.I)
+
+
+# "Play something similar to this song", "what's this song?", "who sings this?"
+ABOUT_THE_SONG = re.compile(
+    r"\b(this|that|current|same) (song|track|tune|gaana|music|video)\b|\bsimilar\b|\bmore like\b|\bsomething like\b"
+    r"|\b(songs?|music|anything) like (this|that|it)\b|\bwhat'?s (playing|this)\b|\bwho (sings|sang)\b", re.I)
+# ... and of those, wanting something *else* like it (so it mustn't play the same song again)
+SIMILAR = re.compile(r"\bsimilar\b|\bmore like\b|\bsomething like\b|\b(songs?|music|anything) like\b"
+                     r"|\b(another|different|other) (song|one|track)\b", re.I)
+
+
+async def _now_playing() -> Optional[dict]:
+    """What's playing on this PC ({app, title, artist}), or paused (e.g. while Bit listens to you)."""
+    try:
+        found = [s for s in await media.sessions() if s.get("title")]
+    except Exception:
+        return None
+    return next((s for s in found if s.get("playing")), found[0] if found else None)
 
 
 async def converse(message: str, name: str = "Bit", source: str = "typed", mood: str = "", focus: str = "",
@@ -373,6 +411,12 @@ async def converse(message: str, name: str = "Bit", source: str = "typed", mood:
         extra += f"The user's Google Calendar, next 7 days (date time | title | place):\n{calendar}\n"
     elif gcal.status()["connected"]:
         extra += "The user's Google Calendar has nothing in the next 7 days.\n"
+    # Asked about the song ("something similar to this", "what's this song?"):
+    # only then does the AI learn what's playing (Windows' media info).
+    now_playing = await _now_playing() if ABOUT_THE_SONG.search(message) else None
+    if now_playing:
+        by = f" by {now_playing['artist']}" if now_playing.get("artist") else ""
+        extra += f"Now playing on this PC (the user is asking about it): \"{now_playing['title']}\"{by} in {media.app_name(now_playing['app'])}.\n"
     pending = pending_confirmation()
     if pending:
         extra += f"Waiting for the user to confirm deleting \"{pending['title']}\": answer with action {{\"type\": \"confirm\"}} or {{\"type\": \"cancel\"}}.\n"
@@ -407,6 +451,10 @@ async def converse(message: str, name: str = "Bit", source: str = "typed", mood:
         shortcut = {"say": "", "mood": "happy", "action": {"type": "confirm"}}
     elif pending and NO.match(message):
         shortcut = {"say": "", "mood": "neutral", "action": {"type": "cancel"}}
+    elif (opening := OPEN_APP.match(message)) and len(message.split()) <= OPEN_APP_MAX_WORDS:
+        app = await asyncio.to_thread(apps.strong_match, opening.group(1))
+        if app is not None:
+            shortcut = {"say": "", "mood": "happy", "action": {"type": "open_app", "name": app["name"]}}
     turn = await memory.run_turn(thread_id, HumanMessage(content=message), build_prompt, skip_model=shortcut is not None, screen=screen)
     if shortcut is not None:
         data = shortcut
@@ -434,8 +482,11 @@ async def converse(message: str, name: str = "Bit", source: str = "typed", mood:
     focus_change = None
     kind = action.get("type") if isinstance(action, dict) else None
     if kind == "youtube":
-        applied, message_override, open_url = await youtube.find(action.get("query"), action.get("play") is not False)
+        avoid = now_playing["title"] if now_playing and SIMILAR.search(message) else None
+        applied, message_override, open_url = await youtube.find(action.get("query"), action.get("play") is not False, avoid=avoid)
         say = ""  # say what actually happened (a video, or just the results page)
+        if applied:
+            await media.forget()  # something new is starting: don't resume what was paused while it listened
     elif kind == "media":
         applied, message_override = await media.run(action.get("command"))
         say = ""  # e.g. "Nothing's playing right now" beats the model's guess
@@ -467,6 +518,11 @@ async def converse(message: str, name: str = "Bit", source: str = "typed", mood:
             except (TypeError, ValueError):
                 minutes = 25
             applied, message_override, focus_change = True, f"Focus mode for {minutes} minutes. You've got this!", {"minutes": minutes}
+    elif kind == "open_app":
+        applied, message_override = await apps.open_app(action.get("name"))
+        say = ""  # what really opened (its Start menu name), or why not
+        if applied:
+            move = "nod"
     elif kind == "move":
         name = str(action.get("name") or "").strip().lower().replace(" ", "")
         if name in MOVES:
@@ -528,6 +584,10 @@ async def converse(message: str, name: str = "Bit", source: str = "typed", mood:
     # Is a round of rock-paper-scissors going? (It asked for a pick, or "again?")
     games.expect_rps(bool(re.search(r"rock,? paper,? or scissors\?\s*$", say, re.I)) or (kind == "game" and say.rstrip().endswith("Again?")))
     remembered = _update_memory(data)
+    if now_playing:
+        # Say so in the chat: this message took what's playing to the AI.
+        note = f"🎵 Told the AI what's playing (\"{youtube.spoken_title(now_playing['title'])}\"), since you asked about it."
+        details = f"{details}\n\n{note}" if details else note
     if pending_search is None and pending_look is None:
         # A search's (or a look's) answer is written by search_answer() / look_answer() instead.
         add_message("assistant", say or IGNORED_NOTE, details=details, thread_id=thread_id)
@@ -538,7 +598,7 @@ async def converse(message: str, name: str = "Bit", source: str = "typed", mood:
         "details": details,
         "mood": mood,
         "action": action if applied else None,
-        "applied": applied and kind not in ("youtube", "media", "search", "move", "focus", "game", "calendar_add", "look"),  # "applied" = tasks changed
+        "applied": applied and kind not in ("youtube", "media", "search", "move", "focus", "game", "calendar_add", "look", "open_app"),  # "applied" = tasks changed
         "calendar_changed": bool(applied) and kind == "calendar_add",
         "open_url": open_url,
         "search": pending_search,  # the app fetches the answer next (POST /search)
@@ -587,7 +647,7 @@ def _keep_listening(data: dict, kind: Optional[str], applied: bool, say: str) ->
         return False
     if pending_confirmation() is not None or say.rstrip().endswith("?"):
         return True  # it asked something: "Delete Gym? Say yes to confirm", "Which task?"
-    if applied or kind in ("youtube", "media", "search", "move", "focus", "look"):
+    if applied or kind in ("youtube", "media", "search", "move", "focus", "look", "open_app"):
         return False  # a task: done, back to waiting for "Hey Bit"
     return data.get("follow_up") is True
 

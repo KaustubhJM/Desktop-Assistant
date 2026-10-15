@@ -35,6 +35,9 @@ MODELS = Path(__file__).parent / "models"
 IDLE_UNLOAD_S = 600
 
 STT_MODELS = {"fast": "base.en", "accurate": "small.en"}
+# faster-whisper uses 4 threads by default; on an 8-core laptop (Ryzen 7 7840HS)
+# 8 is ~30% quicker and more doesn't help (hyper-threads share the same cores).
+STT_THREADS = max(4, min(8, (os.cpu_count() or 8) // 2))
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
 # Primes Whisper to write Indian names in their usual romanised spelling.
@@ -55,8 +58,11 @@ class _Lazy:
         while True:
             time.sleep(30)
             with self._lock:
-                if self._loaded() and not self.keep_warm and time.time() - self._last_used > IDLE_UNLOAD_S:
-                    self._unload()
+                self._trim(time.time() - IDLE_UNLOAD_S)
+
+    def _trim(self, unused_since: float) -> None:
+        if self._loaded() and not self.keep_warm and self._last_used < unused_since:
+            self._unload()
 
     def _touch(self):
         self._last_used = time.time()
@@ -70,16 +76,28 @@ class _Lazy:
 
 class SpeechToText(_Lazy):
     def __init__(self):
-        self._model = None
-        self._model_name: Optional[str] = None
+        # Model name -> WhisperModel. "Hey Bit" can use both: the quick one for
+        # every check, the bigger one for a second opinion (over music), so
+        # switching between them mustn't mean reloading from disk each time.
+        self._models: dict = {}
+        self._used: dict[str, float] = {}
         super().__init__()
 
     def _loaded(self) -> bool:
-        return self._model is not None
+        return bool(self._models)
 
     def _unload(self) -> None:
-        self._model = None
-        self._model_name = None
+        self._models.clear()
+        self._used.clear()
+
+    def _trim(self, unused_since: float) -> None:
+        # While hands-free is on, the quick model stays loaded; a model used only
+        # now and then (the second opinion) still goes after a quiet spell.
+        for name in list(self._models):
+            warm = self.keep_warm and name == STT_MODELS["fast"]
+            if not warm and self._used.get(name, 0.0) < unused_since:
+                del self._models[name]
+                self._used.pop(name, None)
 
     def transcribe(self, wav_bytes: bytes, quality: str = "fast") -> dict:
         return self.transcribe_pcm(_read_wav_16k_mono(wav_bytes), quality)
@@ -98,15 +116,23 @@ class SpeechToText(_Lazy):
         with self._lock:
             self._touch()
             t0 = time.perf_counter()
-            if self._model_name != name:
+            model = self._models.get(name)
+            if model is None:
                 from faster_whisper import WhisperModel
 
-                self._model = WhisperModel(name, device="cpu", compute_type="int8", download_root=str(MODELS / "whisper"))
-                self._model_name = name
+                model = self._models[name] = WhisperModel(
+                    name, device="cpu", compute_type="int8", cpu_threads=STT_THREADS, download_root=str(MODELS / "whisper")
+                )
+            self._used[name] = time.time()
             load_s = time.perf_counter() - t0
             t1 = time.perf_counter()
-            segments, _ = self._model.transcribe(
-                _normalize(audio), language="en", beam_size=1, vad_filter=True, initial_prompt=hint, word_timestamps=words
+            # temperature=0: no retries at higher temperatures when Whisper isn't
+            # sure (over music it retried up to 5 times: 5.4 s instead of 2 s for
+            # the same, correct answer). Those retries help long recordings, not
+            # a sentence spoken to the robot.
+            segments, _ = model.transcribe(
+                _normalize(audio), language="en", beam_size=1, vad_filter=True, initial_prompt=hint, word_timestamps=words,
+                temperature=0.0,
             )
             segments = list(segments)
             text = " ".join(s.text.strip() for s in segments).strip()
@@ -157,20 +183,36 @@ def available() -> dict:
 
 # ------------------------------------------------------------------- audio io
 
+# Kept open between requests: a fresh HTTPS connection to Groq costs ~0.5 s
+# more from here, on every command. (httpx's Client is safe across threads.)
+_groq = httpx.Client(timeout=12, limits=httpx.Limits(keepalive_expiry=120))
+
+
+def warm_online() -> None:
+    """Connect to Groq ahead of time ("Hey Bit" may be coming). An empty request:
+    no key, no audio; it only opens the connection, and the answer is ignored."""
+    try:
+        _groq.get("https://api.groq.com/openai/v1/models", timeout=5)
+    except Exception:
+        pass
+
+
 def _transcribe_online(audio: np.ndarray, hint: Optional[str]) -> dict:
     key = os.getenv("GROQ_API_KEY", "")
     if not key:
         raise RuntimeError("no GROQ_API_KEY")
     t0 = time.perf_counter()
-    with httpx.Client(timeout=12) as client:
-        resp = client.post(
-            GROQ_STT_URL,
-            headers={"Authorization": f"Bearer {key}"},
-            files={"file": ("speech.wav", _to_wav(_normalize(audio), 16000), "audio/wav")},
-            data={"model": GROQ_STT_MODEL, "language": "en", "response_format": "verbose_json", "temperature": "0",
-                  "prompt": " ".join(p for p in (hint, NAMES_HINT) if p)},
-        )
-        resp.raise_for_status()
+    request = dict(
+        headers={"Authorization": f"Bearer {key}"},
+        files={"file": ("speech.wav", _to_wav(_normalize(audio), 16000), "audio/wav")},
+        data={"model": GROQ_STT_MODEL, "language": "en", "response_format": "verbose_json", "temperature": "0",
+              "prompt": " ".join(p for p in (hint, NAMES_HINT) if p)},
+    )
+    try:
+        resp = _groq.post(GROQ_STT_URL, **request)
+    except httpx.RemoteProtocolError:  # the idle connection was closed just as it was reused
+        resp = _groq.post(GROQ_STT_URL, **request)
+    resp.raise_for_status()
     data = resp.json()
     text = str(data.get("text") or "").strip()
     logprob = min((float(s["avg_logprob"]) for s in data.get("segments") or [] if "avg_logprob" in s), default=None)

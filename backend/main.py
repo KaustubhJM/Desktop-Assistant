@@ -14,6 +14,7 @@ The glue. Run this with:  uvicorn main:app --reload
 - /threads, /memories   -> conversations ("New chat") and the facts Bit remembers about you (memory.py)
 - POST /stt, /tts       -> local speech recognition and voice (speech.py)
 - GET/POST /wake        -> "Hey Bit" hands-free listening on/off/muted (wake.py)
+- POST /media/hold, /media/release -> pause what's playing while Bit listens, resume it after (media.py)
 - POST /search         -> a web search answer (second step of a chat turn that needs one; web.py)
 - POST /look           -> help with what's on screen, from a screenshot (second step; vision.py)
 - GET/POST /activity    -> what you're doing (coding / watching / music), for the robot's mood (activity.py)
@@ -36,6 +37,8 @@ from fastapi.responses import JSONResponse
 from pydantic import AfterValidator, BaseModel
 
 import activity
+import agent
+import apps
 import beat
 import gcal
 import briefing
@@ -118,7 +121,25 @@ def _push_from_thread(event: dict) -> None:
         else:
             beat_listener.stop()
     if _loop is not None:
+        if event.get("type") == "wake" and event.get("phase") == "attention":
+            # Maybe a command is coming: connect to the online services now, while
+            # you're still talking, rather than after (~0.5 s each from here).
+            asyncio.run_coroutine_threadsafe(agent.warm(), _loop)
+            if wake_listener.quality == "online":
+                threading.Thread(target=speech.warm_online, daemon=True).start()
+        if event.get("type") == "wake" and event.get("phase") == "listening":
+            asyncio.run_coroutine_threadsafe(_pause_for_listening(), _loop)
         asyncio.run_coroutine_threadsafe(manager.broadcast(event), _loop)
+
+
+async def _pause_for_listening() -> None:
+    """Sure it's its name: pause the music so it hears you, not the song. The app
+    resumes it once the exchange is over (POST /media/release)."""
+    try:
+        if await media.hold():
+            await asyncio.to_thread(wake_listener.room_changed)
+    except Exception as err:
+        print(f"[media] couldn't pause for listening: {err}")
 
 
 beat_listener = beat.BeatListener(lambda b: _push_from_thread({"type": "beat", "text": "", **b}))
@@ -133,6 +154,8 @@ async def lifespan(app: FastAPI):
     reminders.init_tables()
     conversation.init_tables()
     gcal.init_tables()
+    # Read the Start menu now (about a second, in the background) so the first "open X" is quick.
+    threading.Thread(target=apps.installed, daemon=True).start()
     if os.getenv("REMINDER_WATCH_STDIN") == "1":
         # Never outlive the desktop app, even if it's killed without cleanup.
         threading.Thread(target=_exit_when_parent_goes_away, daemon=True).start()
@@ -437,6 +460,21 @@ async def set_wake(req: WakeIn):
         speech.stt.keep_warm = False
         return await run_in_threadpool(wake_listener.stop)
     return wake_listener.status()
+
+
+@app.post("/media/hold")
+async def media_hold():
+    """Pause what's playing while Bit listens (push-to-talk, answering in a conversation)."""
+    return {"paused": await media.hold()}
+
+
+@app.post("/media/release")
+async def media_release():
+    """The exchange is over: resume what was paused for it. Not while "Hey Bit" is
+    still hearing a sentence (the app asks again)."""
+    if wake_listener.capturing:
+        return {"resumed": False, "busy": True}
+    return {"resumed": await media.release()}
 
 
 class SearchIn(BaseModel):

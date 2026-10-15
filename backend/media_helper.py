@@ -13,6 +13,8 @@ if anything goes wrong, only this helper dies; media.py starts a new one.
 Protocol: one JSON object per line on stdin, one reply per line on stdout.
   {"id": 1, "cmd": "control", "command": "pause"} -> {"id": 1, "ok": true, "text": "Paused."}
   {"id": 2, "cmd": "sessions"}                     -> {"id": 2, "sessions": [{app, playing, title, artist}]}
+  {"id": 3, "cmd": "hold"} / "release" / "forget"  -> pause what's playing while Bit listens, resume it after
+                                                      ({"paused": bool} / {"resumed": bool} / {})
 It exits when the backend closes its stdin (or dies).
 """
 
@@ -31,6 +33,13 @@ async def handle(msg: dict) -> dict:
         return {"ok": ok, "text": text}
     if msg.get("cmd") == "sessions":
         return {"sessions": await media.sessions()}
+    if msg.get("cmd") == "hold":
+        return {"paused": await media.hold()}
+    if msg.get("cmd") == "release":
+        return {"resumed": await media.release()}
+    if msg.get("cmd") == "forget":
+        await media.forget()
+        return {}
     return {"error": "unknown command"}
 
 

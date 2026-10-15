@@ -19,6 +19,11 @@ does the thinking. See `README.md` (architecture) and `app/README.md`
   vision model, then one with each message while Bit keeps looking (👀, ends
   on "stop looking" / 3 quiet minutes); only on request, never saved, and the
   panel says where it went (`vision.py`, `screen.ts`). Only the user's question goes to search.
+  The now-playing title/artist goes to the AI only when the message is about the
+  song ("similar to this", "what's this song?": `conversation.ABOUT_THE_SONG`),
+  and the reply's details say so (🎵); the user agreed to this on 2026-10-15.
+  The list of installed apps (`apps.py`) never goes into a prompt: the model
+  names an app, the backend matches it locally.
   Keep it that way, and say what is sent where in the UI.
 - **Don't break what works.** Change internals behind existing interfaces
   (e.g. `conversation.converse()` keeps its signature and reply shape), and keep
@@ -42,6 +47,7 @@ venv/Scripts/python tests/test_activity.py    # coding/watching/music detection
 venv/Scripts/python tests/test_memory.py      # threads, summaries, long-term facts
 venv/Scripts/python tests/test_beat.py        # tempo/phase on synthetic drum tracks
 venv/Scripts/python tests/test_calendar.py    # Google Calendar with a fake calendar
+venv/Scripts/python tests/test_apps.py        # opening apps, with a fake Start menu
 
 # app
 cd app
@@ -51,7 +57,7 @@ BIT_SELFTEST_ONLY=memory,search npm run selftest       # just some sections
 ```
 
 Self-test sections: `unit captures dynamic transparency click drag peek system
-size voice tasks backend youtube search look memory effects mood checkins focus
+size voice tasks backend youtube apps search look memory effects mood checkins focus
 wander beat wake conversation activity realclick metrics`, plus `ontop` (only when named: opens a full-screen Edge
 InPrivate window). Results go to `app/selftest-output/results.json` with
 screenshots next to it. The self-test uses throwaway settings and databases and
@@ -76,12 +82,18 @@ Backend (`backend/`), started by the app with a per-launch token:
 - `web.py` (search answers), `vision.py` ("help me with this" from a screenshot,
   `agent.call_vision`), `youtube.py`, `media.py`, plus `media_helper.py`
   (a separate process: Windows' media API).
+- `apps.py`: "open VS Code". Start menu apps only (`Get-StartApps`), matched
+  locally and started via `explorer.exe shell:AppsFolder\<AppID>`; never a
+  command, path or argument from the model. Uninstallers, scripts, docs and
+  web links are filtered out. A clear "open X" skips the model
+  (`conversation.OPEN_APP`). `REMINDER_APPS_DRY_RUN=1` (the self-test) opens nothing.
 - `speech.py`: Whisper STT (local, or Groq "online") and Kokoro TTS.
   `wake.py`: Vosk tripwire plus Whisper confirmation. `activity.py`: what you're doing.
 
 App (`app/src/`):
 - `main/`: lifecycle (`index.ts`), robot window, presence/peeking, tray,
   assistant turn flow and panel IPC (`assistant.ts`), `wake.ts`,
+  `musicHold.ts` (music paused while it listens, resumed after),
   `activity.ts`, `onTop.ts`, `links.ts` (URL allow-lists), `screen.ts`
   (screenshot, Bit excluded via content protection), `selftest.ts`.
 - `renderer/src/`: robot rendering (`robot/` brain, clips, eyes, stage),
@@ -141,6 +153,19 @@ look", then `POST /look`.
   (voice only). Keep the "hm?" look before the chime on both paths.
 - The Vosk wake model only knows dictionary words. "Hey Bit" always works,
   custom names may not.
+- Over music, Whisper's temperature fallback re-decodes up to 5 times: a 2 s
+  name check took 5.4 s for the same answer. `speech.py` uses temperature=0
+  and 8 CPU threads (~30% faster than the default 4 on this Ryzen 7840HS).
+- Music under a "Hey Bit" command leaks lyrics into it ("pause the music or
+  let it go"). The backend pauses playback once the name is confirmed
+  (`media.hold`, then `wake_listener.room_changed`); `app/src/main/musicHold.ts`
+  resumes it (`/media/release`) when the exchange is over. Self-tests must call
+  `setMusicHold(false)` (runSelftest does) so they never touch real music.
+  Benchmark idea: commands over a synthetic song (chords, drums, a Kokoro
+  voice as vocals) through `WakeListener.feed`.
+- From here a fresh HTTPS connection to Groq costs ~0.5 s more than a reused
+  one. Model calls go through `agent._pooled` and `speech._groq` (kept open);
+  the wake tripwire pre-connects (`agent.warm`, `speech.warm_online`).
 
 ## Conventions
 

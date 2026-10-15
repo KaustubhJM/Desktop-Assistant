@@ -70,6 +70,11 @@ reminder and understanding plain-English updates like "push my 3pm to 4".
 - **backend/media.py** controls whatever is playing (YouTube in the browser,
   Spotify…) through Windows' media sessions: play, pause, skip, volume,
   "what's playing?". Tests: `venv\Scripts\python tests	est_tools.py`.
+- **backend/apps.py** opens apps and games from your Start menu ("open VS
+  Code", "launch WhatsApp"). The AI only names the app; the backend picks the
+  closest Start menu entry and starts it the way the Start menu does. It never
+  runs commands or opens files, skips uninstallers and scripts, and your app
+  list never leaves the laptop. Tests: `venv\Scripts\python tests\test_apps.py`.
 - **backend/wake.py** is the optional hands-free "Hey Bit": a tiny offline
   recogniser (Vosk) listens for the name, and local Whisper confirms it and
   transcribes the command. Audio stays in memory and is never saved or sent.

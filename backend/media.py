@@ -136,6 +136,31 @@ async def run(command: object) -> tuple[bool, str]:
     return bool(reply.get("ok")), str(reply.get("text") or "")
 
 
+async def hold() -> bool:
+    """Pause what's playing while Bit listens to you (True if something was).
+    release() resumes exactly that, unless a command about the music took over."""
+    if not ISOLATE:
+        return await _hold()
+    reply = await asyncio.to_thread(helper.request, {"cmd": "hold"})
+    return bool(reply.get("paused"))
+
+
+async def release() -> bool:
+    """Resume what hold() paused, if it's still paused (True if anything resumed)."""
+    if not ISOLATE:
+        return await _release()
+    reply = await asyncio.to_thread(helper.request, {"cmd": "release"})
+    return bool(reply.get("resumed"))
+
+
+async def forget() -> None:
+    """Something new is starting ("play X on YouTube"): don't resume the old one."""
+    if not ISOLATE:
+        _held.clear()
+        return
+    await asyncio.to_thread(helper.request, {"cmd": "forget"})
+
+
 async def sessions() -> list[dict]:
     """What's in Windows' media sessions: [{app, playing, title, artist}] (safely, like run())."""
     if ISOLATE:
@@ -171,6 +196,44 @@ def _status(session) -> int:
         return -1
 
 
+# Paused by hold() so Bit can hear you: these sessions are resumed by release().
+# They live in whichever process talks to Windows (the helper, in the app), as
+# Windows' own session objects, so release() resumes the very tab or app it
+# paused (not another paused tab in the same browser).
+_held: list = []
+
+
+async def _hold() -> bool:
+    manager = await get_manager()
+    if manager is None:
+        return False  # no media sessions: the media keys can't pause reliably, so leave it
+    paused = False
+    for s in list(manager.get_sessions()):
+        if _status(s) == PLAYING and await s.try_pause_async():
+            _held.append(s)
+            paused = True
+    return paused
+
+
+async def _release() -> bool:
+    resumed = False
+    for s in list(_held):
+        try:
+            if _status(s) == PAUSED and await s.try_play_async():
+                resumed = True
+        except Exception:
+            pass  # that tab or app has closed since
+    _held.clear()
+    return resumed
+
+
+def _is_held(session) -> bool:
+    if any(s is session for s in _held):
+        return True
+    aumid = getattr(session, "source_app_user_model_id", None)
+    return any(getattr(s, "source_app_user_model_id", None) == aumid for s in _held)
+
+
 async def _describe(session) -> str:
     where = app_name(session.source_app_user_model_id)
     try:
@@ -178,7 +241,8 @@ async def _describe(session) -> str:
         title, artist = (props.title or "").strip(), (props.artist or "").strip()
     except Exception:
         title, artist = "", ""
-    state = "playing" if _status(session) == PLAYING else "paused"
+    # Paused only while it listens to you: it's still "playing" as far as you're concerned.
+    state = "playing" if _status(session) == PLAYING or _is_held(session) else "paused"
     if not title:
         return f"Something is {state} in {where}."
     by = f" by {artist}" if artist and len(artist) <= 40 else ""
@@ -210,13 +274,16 @@ async def control(command: object) -> tuple[bool, str]:
     paused = [s for s in sessions if _status(s) == PAUSED]
 
     if cmd == "status":
-        target = playing[0] if playing else current
+        target = playing[0] if playing else (_held[0] if _held else current)
         return (True, await _describe(target)) if target else (True, "Nothing's playing right now.")
 
     if cmd == "toggle":
-        cmd = "pause" if playing else "play"
+        cmd = "pause" if playing or _held else "play"
 
     if cmd == "pause":
+        if not playing and _held:
+            _held.clear()  # it paused the music to listen to you: now it just stays paused
+            return True, "Paused."
         if not playing:
             return True, "Nothing's playing right now."
         for s in playing:  # "pause" means quiet: pause everything that's playing
@@ -224,6 +291,7 @@ async def control(command: object) -> tuple[bool, str]:
         return True, "Paused."
 
     if cmd == "play":
+        _held.clear()  # you said what to play: nothing else is resumed later
         if playing:
             return True, "It's already playing."
         target = current if current is not None and _status(current) == PAUSED else (paused[0] if paused else None)

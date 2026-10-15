@@ -26,10 +26,12 @@ call_vision answers about a screenshot ("help me with this", vision.py) with
 the models that can see (VISION_LANES).
 """
 
+import asyncio
 import json
 import os
 import re
 import time
+import weakref
 
 import httpx
 from dotenv import load_dotenv
@@ -76,6 +78,43 @@ SEARCH_LANES: list[tuple[str, str]] = [
 ]
 SEARCH_TIMEOUT_S = 20
 
+# Connections are kept open between calls: from here (India) a fresh HTTPS
+# connection to Groq costs ~0.5 s more than a reused one, on every call, and a
+# spoken turn makes two (speech recognition, then the reply). One pool per
+# event loop (the server has one; tests make several).
+_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = weakref.WeakKeyDictionary()
+_AsyncClient = httpx.AsyncClient
+
+
+class _pooled:
+    """`async with _pooled(timeout) as client:` like a fresh httpx.AsyncClient, but on the shared, kept-open pool."""
+
+    def __init__(self, timeout: float):
+        self.timeout = timeout
+
+    async def __aenter__(self) -> "_pooled":
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        return None
+
+    @staticmethod
+    def client() -> httpx.AsyncClient:
+        loop = asyncio.get_running_loop()
+        client = _pools.get(loop)
+        if client is None or client.is_closed:
+            client = _pools[loop] = _AsyncClient(limits=httpx.Limits(keepalive_expiry=120))
+        return client
+
+    async def post(self, url: str, **kwargs) -> httpx.Response:
+        client = self.client()
+        try:
+            return await client.post(url, timeout=self.timeout, **kwargs)
+        except httpx.RemoteProtocolError:
+            # The server closed the idle connection just as it was reused: once more, on a new one.
+            return await client.post(url, timeout=self.timeout, **kwargs)
+
+
 # lane -> time.time() until which we leave it alone
 _resting: dict[str, float] = {}
 # which lane answered last (for logs and tests)
@@ -86,7 +125,7 @@ async def _call_gemini(prompt: str, model: str) -> str:
     body: dict = {"contents": [{"parts": [{"text": prompt}]}]}
     if model.startswith("gemini-3"):
         body["generationConfig"] = {"thinkingConfig": {"thinkingLevel": "low"}}  # quick replies
-    async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
+    async with _pooled(TIMEOUT_S) as client:
         resp = await client.post(
             GEMINI_URL.format(model=model),
             # Key goes in a header, not the URL: httpx puts the URL into its
@@ -101,7 +140,7 @@ async def _call_gemini(prompt: str, model: str) -> str:
 
 
 async def _call_groq(prompt: str, model: str) -> str:
-    async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
+    async with _pooled(TIMEOUT_S) as client:
         resp = await client.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
@@ -170,11 +209,26 @@ async def _call_llm(prompt: str) -> str:
     return await _route(LANES, lambda p, m: _call_gemini(prompt, m) if p == "gemini" else _call_groq(prompt, m))
 
 
+async def warm() -> None:
+    """Connect to the first chat lane ahead of time (a spoken command is on its
+    way). An empty request, no key or text: it only opens the connection."""
+    now = time.time()
+    for provider, model in LANES:
+        if _resting.get(f"{provider}:{model}", 0) > now or not (GROQ_API_KEY if provider == "groq" else GEMINI_API_KEY):
+            continue
+        url = "https://api.groq.com/openai/v1/models" if provider == "groq" else "https://generativelanguage.googleapis.com/v1beta/models"
+        try:
+            await _pooled.client().get(url, timeout=5)
+        except Exception:
+            pass
+        return
+
+
 # ----------------------------------------------------------------- web search
 
 async def _search_gemini(prompt: str, model: str) -> dict:
     """Gemini with Google Search grounding -> {text, sources: [{title, url}]}."""
-    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT_S) as client:
+    async with _pooled(SEARCH_TIMEOUT_S) as client:
         resp = await client.post(
             GEMINI_URL.format(model=model),
             headers={"x-goog-api-key": GEMINI_API_KEY},
@@ -190,7 +244,7 @@ async def _search_gemini(prompt: str, model: str) -> dict:
 
 async def _search_groq(prompt: str, model: str) -> dict:
     """gpt-oss on Groq with its built-in browser search -> {text, sources: [{title, url}]}."""
-    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT_S) as client:
+    async with _pooled(SEARCH_TIMEOUT_S) as client:
         resp = await client.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
@@ -239,7 +293,7 @@ async def _vision_gemini(prompt: str, image_b64: str, mime: str, model: str) -> 
     body: dict = {"contents": [{"parts": [{"inline_data": {"mime_type": mime, "data": image_b64}}, {"text": prompt}]}]}
     if model.startswith("gemini-3"):
         body["generationConfig"] = {"thinkingConfig": {"thinkingLevel": "low"}}
-    async with httpx.AsyncClient(timeout=VISION_TIMEOUT_S) as client:
+    async with _pooled(VISION_TIMEOUT_S) as client:
         resp = await client.post(GEMINI_URL.format(model=model), headers={"x-goog-api-key": GEMINI_API_KEY}, json=body)
         resp.raise_for_status()
         parts = resp.json()["candidates"][0]["content"]["parts"]
@@ -247,7 +301,7 @@ async def _vision_gemini(prompt: str, image_b64: str, mime: str, model: str) -> 
 
 
 async def _vision_groq(prompt: str, image_b64: str, mime: str, model: str) -> str:
-    async with httpx.AsyncClient(timeout=VISION_TIMEOUT_S) as client:
+    async with _pooled(VISION_TIMEOUT_S) as client:
         resp = await client.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},

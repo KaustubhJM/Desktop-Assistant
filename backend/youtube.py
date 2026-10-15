@@ -15,6 +15,7 @@ Only the search words are sent to YouTube, and only when you ask.
 
 import html
 import os
+import re
 import unicodedata
 from typing import Optional
 from urllib.parse import urlencode
@@ -53,15 +54,32 @@ def spoken_title(title: str, limit: int = 60) -> str:
     return short
 
 
-async def top_video(query: str) -> Optional[dict]:
-    """The best-matching video as {id, title, channel}, or None (no key, no match, API error)."""
+def _core_title(title: str) -> str:
+    """ "Namo Namo - Lyrical | Kedarnath | Amit Trivedi" -> "namo namo" (the song itself, not the video's extras)."""
+    t = re.split(r"\s[-–—|]\s|\||\(|\[|\bft\.?\s|\bfeat\.?\s", title.lower(), maxsplit=1)[0]
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", t)).strip()
+
+
+def same_song(a: str, b: str) -> bool:
+    """Two video titles for the same song ("Namo Namo - Lyrical" vs "Namo Namo | Kedarnath ...")."""
+    ca, cb = _core_title(a), _core_title(b)
+    if not ca or not cb:
+        return False
+    short, long_ = sorted((ca, cb), key=len)
+    return ca == cb or (len(short) >= 6 and long_.startswith(short))
+
+
+async def top_video(query: str, avoid: Optional[str] = None) -> Optional[dict]:
+    """The best-matching video as {id, title, channel}, or None (no key, no match, API error).
+    avoid: a song that mustn't come back ("something similar to this one": a search
+    that names it puts it first, so the next match is used instead)."""
     if not YOUTUBE_API_KEY:
         return None
     try:
         async with httpx.AsyncClient(timeout=API_TIMEOUT_S) as client:
             resp = await client.get(
                 SEARCH_API,
-                params={"part": "snippet", "type": "video", "maxResults": 1, "q": query},
+                params={"part": "snippet", "type": "video", "maxResults": 5 if avoid else 1, "q": query},
                 # Key in a header, not the URL, so it never shows up in logs.
                 headers={"x-goog-api-key": YOUTUBE_API_KEY},
             )
@@ -70,29 +88,29 @@ async def top_video(query: str) -> Optional[dict]:
     except Exception as err:  # network, quota (403), bad key (400)...
         print(f"[youtube] search failed, falling back to results page: {type(err).__name__}")
         return None
-    if not items:
-        return None
-    video_id = (items[0].get("id") or {}).get("videoId")
-    snippet = items[0].get("snippet") or {}
-    if not isinstance(video_id, str) or not video_id.replace("-", "").replace("_", "").isalnum():
-        return None
-    return {
-        "id": video_id,
-        "title": html.unescape(snippet.get("title") or ""),
-        "channel": html.unescape(snippet.get("channelTitle") or ""),
-    }
+    for item in items:
+        video_id = (item.get("id") or {}).get("videoId")
+        snippet = item.get("snippet") or {}
+        if not isinstance(video_id, str) or not video_id.replace("-", "").replace("_", "").isalnum():
+            continue
+        title = html.unescape(snippet.get("title") or "")
+        if avoid and same_song(title, avoid):
+            continue  # the song you wanted something *like*
+        return {"id": video_id, "title": title, "channel": html.unescape(snippet.get("channelTitle") or "")}
+    return None
 
 
-async def find(query: object, play: bool = True) -> tuple[bool, str, Optional[str]]:
+async def find(query: object, play: bool = True, avoid: Optional[str] = None) -> tuple[bool, str, Optional[str]]:
     """
     Returns (ok, message, url). url is what the app should open.
     play=True tries to go straight to the best video; otherwise search results.
+    avoid: the song playing now, when you asked for something similar (never replayed).
     """
     q = clean_query(query)
     if not q:
         return False, "What should I look up on YouTube?", None
     if play:
-        video = await top_video(q)
+        video = await top_video(q, avoid)
         if video:
             return True, f"Playing \"{spoken_title(video['title'])}\" on YouTube.", watch_url(video["id"])
     return True, f"Here's YouTube for \"{q}\".", results_url(q)

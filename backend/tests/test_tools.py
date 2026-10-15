@@ -291,6 +291,96 @@ def test_volume_uses_keys():
     assert KEYS == [(media.VK["volume_up"], media.VOLUME_STEPS)] and r["say"] == "Turned it up.", r
 
 
+def test_listening_pauses_then_resumes_only_what_it_paused():
+    yt, spotify = FakeSession("Brave", media.PLAYING), FakeSession("Spotify.exe", media.PAUSED)
+    use(FakeManager([yt, spotify], current=yt))
+    assert asyncio.run(media.hold()) is True and yt.status == media.PAUSED
+    assert asyncio.run(media.release()) is True and yt.status == media.PLAYING
+    assert yt.calls == ["pause", "play"] and spotify.calls == [], (yt.calls, spotify.calls)  # not the one you'd paused yourself
+    assert asyncio.run(media.release()) is False and yt.calls == ["pause", "play"]  # once only
+
+
+def test_listening_with_nothing_playing_touches_nothing():
+    yt = FakeSession("Brave", media.PAUSED)
+    use(FakeManager([yt], current=yt))
+    assert asyncio.run(media.hold()) is False and asyncio.run(media.release()) is False and yt.calls == [] and KEYS == []
+
+
+def test_pause_said_while_listening_keeps_it_paused():
+    yt = FakeSession("Brave", media.PLAYING)
+    use(FakeManager([yt], current=yt))
+    asyncio.run(media.hold())
+    r = cmd("pause the music", "pause")
+    assert r["say"] == "Paused." and yt.status == media.PAUSED, r  # not "Nothing's playing"
+    assert asyncio.run(media.release()) is False and yt.calls == ["pause"], yt.calls
+
+
+def test_whats_playing_while_listening_says_playing():
+    yt = FakeSession("Brave", media.PLAYING, title="Lofi beats", artist="Lofi Girl")
+    use(FakeManager([yt], current=yt))
+    asyncio.run(media.hold())
+    r = cmd("what's playing?", "status")
+    assert r["say"] == "That's \"Lofi beats\" by Lofi Girl in Brave, playing.", r
+    asyncio.run(media.release())
+
+
+def test_next_song_while_listening_then_resumes():
+    yt = FakeSession("Brave", media.PLAYING)
+    use(FakeManager([yt], current=yt))
+    asyncio.run(media.hold())
+    r = cmd("next song", "next")
+    assert r["say"] == "Skipped.", r
+    assert asyncio.run(media.release()) is True and yt.calls == ["pause", "next", "play"], yt.calls
+
+
+def test_new_video_while_listening_isnt_resumed_over():
+    yt = FakeSession("Brave", media.PLAYING)
+    use(FakeManager([yt], current=yt))
+    asyncio.run(media.hold())
+    r = with_api("test-key", httpx.Response(200, json=VIDEO), lambda: say("play lofi", {"say": "ok", "mood": "excited", "action": {"type": "youtube", "query": "lofi", "play": True}}))
+    assert r["open_url"] and asyncio.run(media.release()) is False and yt.calls == ["pause"], (r, yt.calls)
+
+
+SAME_THEN_OTHER = {"items": [
+    {"id": {"kind": "youtube#video", "videoId": "nAMoNaMo123"}, "snippet": {"title": "Namo Namo - Lyrical", "channelTitle": "Zee Music"}},
+    {"id": {"kind": "youtube#video", "videoId": "sHiVkAiLaS1"}, "snippet": {"title": "Shiv Kailash Ke Vasi", "channelTitle": "T-Series"}},
+]}
+
+
+def capture_prompts(fn):
+    """Run fn, returning (its result, the prompts the model was given)."""
+    prompts, real = [], agent._call_llm
+
+    async def spy(prompt):
+        prompts.append(prompt)
+        return await real(prompt)
+    conversation.agent._call_llm = agent._call_llm = spy
+    try:
+        return fn(), prompts
+    finally:
+        conversation.agent._call_llm = agent._call_llm = real
+
+
+def test_something_similar_never_replays_the_same_song():
+    # The model searches "songs like Namo Namo"; YouTube's top hit is Namo Namo itself.
+    song = FakeSession("Brave", media.PLAYING, title="Namo Namo - Lyrical | Kedarnath | Amit Trivedi", artist="Zee Music")
+    use(FakeManager([song], current=song))
+    r, prompts = capture_prompts(lambda: with_api("test-key", httpx.Response(200, json=SAME_THEN_OTHER), lambda: say(
+        "play any similar song to this song", {"say": "", "mood": "happy", "action": {"type": "youtube", "query": "songs similar to Namo Namo", "play": True}})))
+    assert r["open_url"].endswith("sHiVkAiLaS1") and "Shiv Kailash" in r["say"], r
+    assert "Namo Namo - Lyrical | Kedarnath" in prompts[0] and "Told the AI what's playing" in (r["details"] or ""), r
+    assert API_CALLS and API_CALLS[0].url.params["maxResults"] == "5", API_CALLS
+
+
+def test_whats_playing_stays_here_unless_asked():
+    song = FakeSession("Brave", media.PLAYING, title="Namo Namo - Lyrical", artist="Zee Music")
+    use(FakeManager([song], current=song))
+    r, prompts = capture_prompts(lambda: with_api("test-key", httpx.Response(200, json=VIDEO), lambda: say(
+        "play lofi", {"say": "", "mood": "happy", "action": {"type": "youtube", "query": "lofi", "play": True}})))
+    assert "Namo" not in prompts[0] and not r["details"] and r["open_url"].endswith("jfKfPfyJRdk"), r
+    assert API_CALLS[0].url.params["maxResults"] == "1", API_CALLS  # an ordinary "play X": just the top hit, as before
+
+
 def test_without_media_sessions_falls_back_to_keys():
     use(None)
     r = cmd("pause", "pause")

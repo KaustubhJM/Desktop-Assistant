@@ -176,6 +176,73 @@ def test_attention_comes_first_then_one_chime():
     assert order[0] == "attention" and order.count("listening") == 1 and order[-1] == "command", order
 
 
+def test_says_whether_you_are_still_talking():
+    # Confirmed mid-sentence: no chime on top of your words. A bare "Hey Bit": chime, then wait.
+    events, _, _ = listen(say("Hey Bit, play some lofi music."))
+    assert [e.get("speaking") for e in events if e["phase"] == "listening"] == [True], events
+    events, _, _ = listen(say("Hey Bit."), silence(2.0), say("What time is it?"))
+    assert [e.get("speaking") for e in events if e["phase"] == "listening"] == [False], events
+
+
+def test_a_thinking_pause_doesnt_cut_the_command():
+    events, _, _ = listen(say("Hey Bit, remind me to"), silence(0.9), say("call mom at seven tonight."))
+    got = commands(events)
+    assert len(got) == 1 and "remind" in got[0].lower() and "mom" in got[0].lower(), events
+
+
+def mishearing_listener(calls):
+    """The quick model mishears the name (as it can over music); the bigger one is real."""
+    def transcribe(audio, hint, quality, words):
+        calls.append(quality)
+        if quality == "fast":
+            return {"text": "Hey, but play some lofi music.", "words": []}
+        return speech.stt.transcribe_pcm(audio, quality, hint, words)
+    events: list = []
+    return wake.WakeListener(events.append, transcribe), events
+
+
+def test_bigger_model_gets_a_second_listen_over_noise():
+    calls: list = []
+    listener, events = mishearing_listener(calls)
+    rng = np.random.default_rng(4)
+    audio = np.concatenate([silence(1.0), say("Hey Bit, play some lofi music.")])
+    feed(listener, np.clip(audio + rng.normal(0, 400, len(audio)), -32768, 32767).astype(np.int16))
+    assert len(commands(events)) == 1 and "music" in commands(events)[0].lower(), events
+    assert "accurate" in calls and listener.stats["rescued"] >= 1, (calls, listener.stats)
+
+
+def test_no_second_listen_in_a_quiet_room():
+    # Quiet room: the quick model is trusted (a second listen only let more sound-alikes through).
+    calls: list = []
+    listener, events = mishearing_listener(calls)
+    feed(listener, say("Hey Bit, play some lofi music."))
+    assert commands(events) == [] and "accurate" not in calls, (events, calls)
+
+
+def test_music_paused_mid_sentence():
+    # A loud song under the command; the app pauses it once the name is confirmed
+    # (room_changed), and the rest of the sentence is judged against the quiet room.
+    rng = np.random.default_rng(3)
+    command = say("Hey Bit, what's the weather like today?")
+    lead, tail = int(16000 * 1.5), int(16000 * 3)
+    voice = np.concatenate([np.zeros(lead, np.int16), command, np.zeros(tail, np.int16)]).astype(np.float32)
+    t = np.arange(len(voice)) / 16000
+    song = (np.sin(2 * np.pi * 220 * t) + rng.normal(0, 0.6, len(voice))) * (1 + 0.5 * np.sin(2 * np.pi * 2 * t))
+    song *= np.sqrt(np.mean(command.astype(np.float32) ** 2)) / np.sqrt(np.mean(song ** 2)) * 0.5  # 6 dB under your voice
+    events: list = []
+    listener = wake.WakeListener(events.append, lambda a, hint, quality, words: speech.stt.transcribe_pcm(a, quality, hint, words))
+    paused_from = None
+    for i in range(0, len(voice) - wake.BLOCK + 1, wake.BLOCK):
+        music = song[i : i + wake.BLOCK] if paused_from is None or i < paused_from else 0
+        listener.feed(np.clip(voice[i : i + wake.BLOCK] + music, -32768, 32767).astype(np.int16))
+        if paused_from is None and any(e["phase"] == "listening" for e in events):
+            paused_from = i + 3 * wake.BLOCK  # the pause lands a moment later
+        if paused_from is not None and i == paused_from:
+            listener.room_changed()
+    got = commands(events)
+    assert paused_from is not None and len(got) == 1 and "weather" in got[0].lower(), events
+
+
 def test_listening_is_cheap():
     # 20 s of quiet room noise: the always-on part must be far below real time.
     rng = np.random.default_rng(2)

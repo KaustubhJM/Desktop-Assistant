@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://localhost:* http://localhost:*"
+    />
+    <title>Chat</title>
+  </head>
+  <body>
+    <div class="card">
+      <header class="titlebar">
+        <div class="mini-robot" aria-hidden="true"><span></span><span></span></div>
+        <div class="title">
+          <div id="name">Bit</div>
+          <div id="status" class="status">Online</div>
+        </div>
+        <button id="close" class="icon-btn" title="Close (Esc)" aria-label="Close">
+          <svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+        </button>
+      </header>
+
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="chat" class="active">Chat</button>
+        <button role="tab" data-tab="today">Today</button>
+        <button role="tab" data-tab="settings">Settings</button>
+      </nav>
+
+      <section id="tab-chat" class="tab active">
+        <div class="threads">
+          <select id="thread-select" title="Conversations" aria-label="Conversation"></select>
+          <button id="thread-new" class="small-btn" type="button" title="Start a new conversation">+ New chat</button>
+          <button id="thread-delete" class="icon-btn" type="button" title="Delete this conversation" aria-label="Delete this conversation">
+            <svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          </button>
+        </div>
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <div id="typing" class="typing hidden" aria-label="Thinking"><span></span><span></span><span></span></div>
+        <button id="stop" class="stop hidden" type="button">Stop talking</button>
+        <form id="composer" class="composer" autocomplete="off">
+          <button type="button" id="mic" class="mic" title="Talk" aria-label="Talk">
+            <svg viewBox="0 0 24 24" width="18" height="18"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" /></svg>
+          </button>
+          <input id="input" type="text" maxlength="2000" spellcheck="true" />
+          <button type="submit" id="send" class="send" title="Send (Enter)" aria-label="Send">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          </button>
+        </form>
+      </section>
+
+      <section id="tab-today" class="tab">
+        <form id="add-task" class="add-task" autocomplete="off">
+          <input id="task-title" type="text" maxlength="200" placeholder="Add a task or reminder…" />
+          <div class="add-row">
+            <input id="task-date" type="date" title="Date" />
+            <input id="task-time" type="time" title="Time (leave empty for any time that day)" />
+            <select id="task-repeat" title="Repeat">
+              <option value="">Once</option>
+              <option value="FREQ=DAILY">Every day</option>
+              <option value="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR">Weekdays</option>
+              <option value="weekly">Every week</option>
+              <option value="FREQ=MONTHLY">Every month</option>
+            </select>
+            <button type="submit" class="add-btn">Add</button>
+          </div>
+          <div id="task-error" class="task-error hidden" role="alert"></div>
+        </form>
+        <div id="tasks" class="tasks"></div>
+        <p class="hint">You can also just tell me — "remind me to study DSA at 7 PM", "every weekday at 9 remind me to stand up", "snooze this for 10 minutes".</p>
+      </section>
+
+      <section id="tab-settings" class="tab settings">
+        <label class="row">
+          <span>Name</span>
+          <input id="set-name" type="text" maxlength="24" />
+        </label>
+        <div class="row">
+          <span>Speak replies</span>
+          <label class="switch"><input id="set-speak" type="checkbox" /><span></span></label>
+        </div>
+        <div class="row">
+          <span>Voice</span>
+          <div class="inline">
+            <select id="set-voice"></select>
+            <button id="test-voice" class="small-btn" type="button">Test</button>
+          </div>
+        </div>
+        <div class="row">
+          <span>Speech recognition<small id="stt-note"></small></span>
+          <div class="segmented" data-setting="sttQuality">
+            <button data-value="fast">Fast</button><button data-value="accurate">Accurate</button><button data-value="online">Online</button>
+          </div>
+        </div>
+        <div class="row">
+          <span>Size</span>
+          <div class="segmented" data-setting="size">
+            <button data-value="small">S</button><button data-value="medium">M</button><button data-value="large">L</button>
+          </div>
+        </div>
+        <div class="row">
+          <span>Look</span>
+          <div class="segmented" data-setting="theme">
+            <button data-value="ivory-cyan">Ivory</button><button data-value="silver-purple">Silver</button>
+          </div>
+        </div>
+        <div class="row">
+          <span>Eyes follow my mouse<small>Only animates its eyes; nothing is recorded</small></span>
+          <label class="switch"><input id="set-follow" type="checkbox" /><span></span></label>
+        </div>
+        <div class="row">
+          <span>Wander around<small>Now and then: a stroll along the bottom of the screen, or sitting on top of the window you're using</small></span>
+          <label class="switch"><input id="set-wander" type="checkbox" /><span></span></label>
+        </div>
+        <div class="row">
+          <span>Check-ins<small>Now and then: a morning hello, a stretch break after long coding, a late-night nudge, "nice work" in the evening</small></span>
+          <label class="switch"><input id="set-checkins" type="checkbox" /><span></span></label>
+        </div>
+        <div class="row">
+          <span>Sounds<small>Little chimes and robot chirps (not the voice)</small></span>
+          <label class="switch"><input id="set-sounds" type="checkbox" /><span></span></label>
+        </div>
+        <div class="row">
+          <span>Reacts to what I'm doing<small>Focused while you code, happy on YouTube, dances to songs — in time with the beat (it listens to the laptop's sound output while a song plays, in memory only). Uses which app is in front and what's playing, on this laptop only — never your screen or microphone</small></span>
+          <label class="switch"><input id="set-activity" type="checkbox" /><span></span></label>
+        </div>
+        <div class="row">
+          <span><span id="wake-label">Hands-free: say “Hey Bit”</span><small id="wake-note"></small></span>
+          <label class="switch"><input id="set-wake" type="checkbox" /><span></span></label>
+        </div>
+        <div class="row">
+          <span>Push to talk</span>
+          <kbd id="shortcut">…</kbd>
+        </div>
+        <div class="row">
+          <span>Google Calendar<small id="cal-note">…</small></span>
+          <button id="cal-btn" class="small-btn" type="button">Connect</button>
+        </div>
+        <div class="row memory">
+          <span>What I remember about you<small id="memory-count">Nothing yet</small></span>
+          <button id="forget" class="danger-btn" type="button">Forget everything</button>
+        </div>
+        <ul id="facts" class="facts"></ul>
+        <p class="hint">Conversations and what Bit remembers about you are stored on this laptop. The voice and the “Hey Bit” listening always run here too, and so does speech recognition unless you choose Online. When Bit answers, your message, the recent conversation and what it remembers about you are sent to the AI provider (Groq or Gemini).</p>
+      </section>
+    </div>
+    <script type="module" src="./src/panel/main.ts"></script>
+  </body>
+</html>

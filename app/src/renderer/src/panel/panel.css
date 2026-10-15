@@ -1,0 +1,847 @@
+:root {
+  --paper: #f8f6f1;
+  --card: #ffffff;
+  --ink: #1d2125;
+  --muted: #6b7178;
+  --line: rgba(29, 33, 37, 0.09);
+  --accent: #19b9d6;
+  --accent-soft: rgba(25, 185, 214, 0.12);
+  --screen: #0d1114;
+  --danger: #c8443a;
+  --radius: 18px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+/* The window is transparent; the card is the panel (room for its shadow). */
+.card {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  border-radius: var(--radius);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22), 0 1px 3px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- title bar */
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px 8px 14px;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.mini-robot {
+  width: 30px;
+  height: 26px;
+  border-radius: 8px;
+  background: #efe9de;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px;
+  position: relative;
+}
+
+.mini-robot::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 5px;
+  background: var(--screen);
+}
+
+.mini-robot span {
+  position: relative;
+  width: 5px;
+  height: 7px;
+  border-radius: 2px;
+  background: #3be3ff;
+  box-shadow: 0 0 5px #3be3ff;
+  transition: height 0.15s;
+}
+
+body.listening .mini-robot span {
+  height: 9px;
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+}
+
+#name {
+  font-weight: 600;
+  font-size: 14.5px;
+}
+
+.status {
+  font-size: 11.5px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3cb878;
+}
+
+.status.offline::before {
+  background: #b8b8b8;
+}
+
+.status.listening {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.status.listening::before {
+  background: var(--danger);
+  animation: pulse 1s infinite;
+}
+
+.status.thinking::before,
+.status.speaking::before {
+  background: var(--accent);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.icon-btn {
+  -webkit-app-region: no-drag;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--ink);
+}
+
+/* --------------------------------------------------------------------- tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 12px 8px;
+}
+
+.tabs button {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 6px 0;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tabs button.active {
+  background: var(--card);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.tab {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  background: var(--card);
+}
+
+.tab.active {
+  display: flex;
+}
+
+/* --------------------------------------------------------------------- chat */
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  user-select: text;
+}
+
+.messages .empty {
+  margin: auto;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 0 24px;
+}
+
+.msg {
+  max-width: 86%;
+  padding: 8px 11px;
+  border-radius: 14px;
+  line-height: 1.42;
+  word-wrap: break-word;
+}
+
+.msg.user {
+  align-self: flex-end;
+  background: var(--ink);
+  color: #fff;
+  border-bottom-right-radius: 5px;
+}
+
+.msg.user.voice::after {
+  content: " · voice";
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.msg.assistant {
+  align-self: flex-start;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 5px;
+}
+
+.msg.offline {
+  color: var(--muted);
+}
+
+.details {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+  font-size: 12.8px;
+}
+
+.details p {
+  margin: 0 0 6px;
+}
+
+.details ul,
+.details ol {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+
+.details pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--screen);
+  color: #d9f6fb;
+  font: 12px/1.45 "Cascadia Code", Consolas, monospace;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.details code,
+.msg code {
+  font: 12px "Cascadia Code", Consolas, monospace;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.details pre code {
+  background: none;
+  padding: 0;
+}
+
+.typing {
+  display: flex;
+  gap: 4px;
+  padding: 2px 16px 6px;
+}
+
+.typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.35;
+  animation: dot 1s infinite;
+}
+
+.typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes dot {
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.stop {
+  align-self: center;
+  margin: 0 0 6px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.composer {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--card);
+}
+
+.composer input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 12px;
+  padding: 8px 11px;
+  font: inherit;
+  outline: none;
+}
+
+.composer input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mic,
+.send {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.mic {
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.mic.on {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+  animation: pulse 1s infinite;
+}
+
+.send {
+  background: var(--ink);
+  color: #fff;
+}
+
+.send:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* -------------------------------------------------------------------- today */
+.tasks {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.task .time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12.5px;
+  min-width: 42px;
+}
+
+.task .what {
+  flex: 1;
+  min-width: 0;
+}
+
+.task.done .what {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.task.past:not(.done) .time {
+  color: var(--muted);
+}
+
+.task.next {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.task .tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hint {
+  margin: 0;
+  padding: 8px 14px 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* ----------------------------------------------------------------- settings */
+.settings {
+  overflow-y: auto;
+  padding: 6px 0 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.row > span {
+  display: flex;
+  flex-direction: column;
+}
+
+.row small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.row input[type="text"],
+.row select {
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 5px 8px;
+  background: var(--paper);
+  outline: none;
+  width: 150px;
+}
+
+.row select {
+  width: 120px;
+}
+
+.inline {
+  display: flex;
+  gap: 6px;
+}
+
+.small-btn,
+.danger-btn {
+  font: inherit;
+  font-size: 12px;
+  border-radius: 9px;
+  padding: 5px 10px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.danger-btn {
+  color: var(--danger);
+  border-color: rgba(200, 68, 58, 0.35);
+}
+
+.segmented {
+  display: flex;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 2px;
+}
+
+.segmented button {
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.segmented button.active {
+  background: var(--card);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+kbd {
+  font: 11.5px "Segoe UI", sans-serif;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  padding: 3px 7px;
+}
+
+.switch {
+  position: relative;
+  flex-shrink: 0; /* a long note beside it mustn't squeeze it */
+  width: 38px;
+  height: 22px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch span {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: #cfd2d5;
+  transition: background 0.2s;
+  cursor: pointer;
+}
+
+.switch span::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s;
+}
+
+.switch input:checked + span {
+  background: var(--accent);
+}
+
+.switch input:checked + span::after {
+  transform: translateX(16px);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ------------------------------------------------------------- add task */
+.add-task {
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.add-task input,
+.add-task select {
+  font: inherit;
+  font-size: 12.5px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 9px;
+  padding: 6px 8px;
+  outline: none;
+  min-width: 0;
+}
+
+.add-task input:focus,
+.add-task select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.add-row {
+  display: flex;
+  gap: 5px;
+}
+
+.add-row input[type="date"] {
+  flex: none;
+  width: 122px;
+}
+
+.add-row input[type="time"] {
+  flex: none;
+  width: 84px;
+}
+
+.add-row select {
+  flex: 1;
+}
+
+.add-btn {
+  border: none;
+  background: var(--ink);
+  color: #fff;
+  border-radius: 9px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.task-error {
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+.day-heading {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 6px 2px 0;
+}
+
+.day-heading:first-child {
+  margin-top: 0;
+}
+
+.task .check {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  border: 1.5px solid rgba(29, 33, 37, 0.3);
+  background: var(--card);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex: none;
+  padding: 0;
+}
+
+.task.done .check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.task.done .check::after {
+  content: "";
+  width: 8px;
+  height: 4px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) translate(1px, -1px);
+}
+
+.task .repeat {
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.task .del {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  flex: none;
+}
+
+.task:hover .del {
+  opacity: 1;
+}
+
+.task .del:hover {
+  background: rgba(200, 68, 58, 0.1);
+  color: var(--danger);
+}
+
+.task .what small {
+  display: block;
+}
+
+/* Source links under a web search answer. */
+.details a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-soft);
+  cursor: pointer;
+}
+
+.details a:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* Conversations: picker + new + delete, above the messages. */
+.threads {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.threads select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field, transparent);
+  color: inherit;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-btn:hover:not(:disabled) {
+  color: #c0392b;
+  border-color: #c0392b55;
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* "Remembered: …" under a reply. */
+.remembered {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.remembered::before {
+  content: "✎ ";
+}
+
+/* What it remembers about you (Settings). */
+.facts {
+  list-style: none;
+  margin: 0;
+  padding: 0 14px 8px;
+}
+
+.facts li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12.5px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.facts li span {
+  flex: 1;
+}
+
+.fact-forget {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.fact-forget:hover {
+  color: #c0392b;
+}
+
+/* Google Calendar events in the Today tab (read-only). */
+.task.calendar .cal-icon {
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  cursor: default;
+}
+

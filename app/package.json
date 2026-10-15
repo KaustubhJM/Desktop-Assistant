@@ -1,0 +1,26 @@
+{
+  "name": "desk-robot",
+  "productName": "Bit",
+  "version": "0.1.0",
+  "description": "A tiny desktop robot companion that lives on your Windows desktop",
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "selftest": "electron-vite build && node scripts/run-selftest.mjs"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/three": "^0.186.0",
+    "electron": "^44.7.0",
+    "electron-vite": "^5.0.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.0.0"
+  }
+}

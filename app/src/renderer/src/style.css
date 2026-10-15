@@ -1,0 +1,129 @@
+:root {
+  --robot-accent: #3be3ff;
+  --bubble-bg: rgba(17, 20, 24, 0.94);
+  --bubble-ink: #eef3f6;
+  /* Set from the layout (robot size) at runtime. */
+  --win-w: 300px;
+  --win-h: 360px;
+  --bubble-bottom: 172px;
+  --bubble-max: 252px;
+  --bubble-font: 13.5px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: var(--win-w);
+  height: var(--win-h);
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+
+/* Self-test captures only: a wallpaper-like backdrop so the robot is visible. */
+body.backdrop {
+  background: linear-gradient(160deg, #708392 0%, #3a4855 100%);
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  width: var(--win-w);
+  height: var(--win-h);
+  display: block;
+}
+
+/* Effects (notes, hearts, Zzz, confetti...): drawn above the robot, never catches clicks. */
+#fx {
+  position: fixed;
+  inset: 0;
+  width: var(--win-w);
+  height: var(--win-h);
+  pointer-events: none;
+}
+
+body.over-robot #stage {
+  cursor: grab;
+}
+
+body.over-robot #stage:active {
+  cursor: grabbing;
+}
+
+/* Speech bubble, floating just above the robot's head. */
+#bubble {
+  position: absolute;
+  left: 50%;
+  bottom: var(--bubble-bottom);
+  transform: translateX(-50%);
+  max-width: var(--bubble-max);
+  min-width: 64px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: var(--bubble-bg);
+  color: var(--bubble-ink);
+  font-size: var(--bubble-font);
+  line-height: 1.4;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+#bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  transform: translateX(-50%) rotate(45deg);
+  background: var(--bubble-bg);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#bubble.urgent {
+  border-color: rgba(59, 227, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(59, 227, 255, 0.25), 0 6px 18px rgba(0, 0, 0, 0.28);
+}
+
+#bubble.hidden {
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px);
+  pointer-events: none;
+}
+
+/* Done / Snooze on reminder bubbles. */
+#bubble-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+#bubble-actions.hidden {
+  display: none;
+}
+
+#bubble-actions button {
+  flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--bubble-ink);
+  border-radius: 9px;
+  padding: 5px 6px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#bubble-actions button:hover {
+  background: rgba(59, 227, 255, 0.18);
+  border-color: rgba(59, 227, 255, 0.45);
+}
